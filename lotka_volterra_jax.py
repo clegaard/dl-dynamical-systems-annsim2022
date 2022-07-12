@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax import grad, jit, vmap
+from jax import grad, jit, value_and_grad, vmap
+from torch import solve
 
 
 from tqdm import tqdm
@@ -11,7 +12,7 @@ def solve_euler(f, t, x0):
     x_cur = x0
     X = [x_cur]
 
-    for t, Δt in tqdm(zip(t[1:], ΔT)):
+    for t, Δt in zip(t[1:], ΔT):
         dy = f(t, x_cur)
         x_new = x_cur + Δt * dy
         X.append(x_new)
@@ -23,12 +24,12 @@ def solve_euler(f, t, x0):
 from jax.lax import scan
 
 
-def solve_euler_scan(f, t, x0):
+def solve_euler_scan(f, t, x0, f_parameters):
     step_sizes = t[1:] - t[:-1]
 
     def f_scan(x_cur, t_and_step):
         t, step = t_and_step
-        dydt = f(t, x_cur)
+        dydt = f(t, x_cur, f_parameters)
         x_new = x_cur + step * dydt  # account for step size
         return x_new, x_new
 
@@ -50,7 +51,14 @@ def solve_euler_scan(f, t, x0):
 #     return X.T
 
 
-def f(t, x):
+def f(t, x):  # fully defined ODE
+    x, y = x
+    dx = α * x - β * x * y
+    dy = δ * x * y - γ * y
+    return jnp.array((dx, dy))
+
+
+def f(t, x, α):
     x, y = x
     dx = α * x - β * x * y
     dy = δ * x * y - γ * y
@@ -71,7 +79,7 @@ if __name__ == "__main__":
 
     z0 = jnp.array((x0, y0))
 
-    X = solve_euler_scan(f, t, z0)
+    X = solve_euler_scan(f, t, z0, α)
 
     fig, ax = plt.subplots()
     ax.plot(t, X[0], label="prey", color="blue")
@@ -82,56 +90,43 @@ if __name__ == "__main__":
     ax.legend()
     plt.show()
 
-    # # Parameter estimation
-    # n_epochs = 100
-    # α_estimate = torch.tensor(3.0, requires_grad=True)
-    # α_estimate.requires_grad = True
-    # lr = 0.001  # learning rate
-    # losses = []
+    # Parameter estimation
+    n_epochs = 1000
+    α_estimate = 3.0
+    lr = 0.0001  # learning rate
+    losses = []
 
-    # X = torch.tensor(X)
-    # Y = torch.tensor(Y)
+    def loss_f(α):
+        x_predicted = solve_euler_scan(f, t, z0, α)
+        return jnp.linalg.norm(X - x_predicted)
 
-    # for _ in tqdm(range(n_epochs)):
-    #     x = torch.tensor(x0, requires_grad=True)
-    #     y = torch.tensor(y0, requires_grad=True)
-    #     X_estimate = [x]
-    #     Y_estimate = [y]
+    @jit
+    def optimization_step(α):
+        loss, dldα = value_and_grad(loss_f)(α)
+        return loss, α - lr * dldα
 
-    #     for h in Δt:
-    #         dx = α_estimate * x - β * x * y
-    #         dy = δ * x * y - γ * y
-    #         x = x + h * dx
-    #         y = y + h * dy
-    #         X_estimate.append(x)
-    #         Y_estimate.append(y)
+    for _ in tqdm(range(n_epochs)):
 
-    #     X_estimate = torch.stack(X_estimate)
-    #     Y_estimate = torch.stack(Y_estimate)
+        loss, α_estimate = optimization_step(α_estimate)
+        losses.append(loss)
 
-    #     loss = torch.linalg.norm(X - X_estimate) + torch.linalg.norm(Y - Y_estimate)
-    #     losses.append(loss.item())
-    #     loss.backward()
-    #     with torch.no_grad():
-    #         α_estimate -= lr * α_estimate.grad
-    #         α_estimate.grad.zero_()
+    x_predicted = solve_euler_scan(f, t, z0, α_estimate)
 
-    # X_estimate = X_estimate.detach().cpu()
-    # Y_estimate = Y_estimate.detach().cpu()
+    fig, ax = plt.subplots()
+    ax.plot(losses)
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("loss(epoch)")
 
-    # fig, ax = plt.subplots()
-    # ax.plot(losses)
-    # ax.set_xlabel("epoch")
-    # ax.set_ylabel("loss(epoch)")
+    fig, ax = plt.subplots()
+    ax.plot(t, X[0], label="prey", color="blue")
+    ax.plot(t, X[1], label="predators", color="red")
+    ax.plot(t, x_predicted[0], label="prey estimate", color="red", linestyle="dotted")
+    ax.plot(
+        t, x_predicted[1], label="predators estimate", color="blue", linestyle="dotted"
+    )
+    ax.set_xlabel("t[s]")
+    ax.set_ylabel("population(t)")
+    ax.legend()
+    ax.set_title(f"Lotka-Volterra α={α_estimate:.2f},β={β},γ={γ},δ={δ}")
 
-    # fig, ax = plt.subplots()
-    # ax.plot(t, X, label="prey", color="blue")
-    # ax.plot(t, Y, label="predators", color="red")
-    # ax.plot(t, X_estimate, label="prey estimate", color="red", linestyle="dotted")
-    # ax.plot(t, Y_estimate, label="predators estimate", color="blue", linestyle="dotted")
-    # ax.set_xlabel("t[s]")
-    # ax.set_ylabel("population(t)")
-    # ax.legend()
-    # ax.set_title(f"Lotka-Volterra α={α_estimate:.2f},β={β},γ={γ},δ={δ}")
-
-    # plt.show()
+    plt.show()
